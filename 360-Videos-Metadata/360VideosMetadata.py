@@ -48,9 +48,12 @@ tag_mdia = "mdia"
 tag_minf = "minf"
 tag_stbl = "stbl"
 tag_uuid = "uuid"
+tag_stsd = "stsd"
+tag_mp4a = "mp4a"
 
 containers = [tag_moov, tag_udta, tag_trak,
-              tag_mdia, tag_minf, tag_stbl]
+              tag_mdia, tag_minf, tag_stbl,
+              tag_stsd, tag_mp4a]
 
 spherical_uuid_id = (
     "\xff\xcc\x82\x63\xf8\x55\x4a\x93\x88\x14\x58\x7a\x02\x52\x1f\xdd")
@@ -101,6 +104,9 @@ spherical_tags = dict()
 for tag in spherical_tags_list:
     spherical_tags[spherical_prefix + tag] = tag
 
+ambisonic_types = {'periphonic': 0, 'horizontal': 1}
+ambisonic_ordering = {'ACN': 0}
+ambisonic_normalization = {'SN3D': 0}
 
 class atom:
     """MPEG4 atom contents and behaviour true for all atoms."""
@@ -224,12 +230,13 @@ class atom:
 class container_atom(atom):
     """MPEG4 container atom contents / behaviour."""
 
-    def __init__(self):
+    def __init__(self, padding=0):
         self.name = ""
         self.position = 0
         self.header_size = 0
         self.content_size = 0
         self.contents = list()
+        self.padding = padding
 
     @staticmethod
     def load(fh, position=None, end=None):
@@ -255,13 +262,21 @@ class container_atom(atom):
             print ("Error: Container atom size exceeds bounds.")
             return None
 
+        padding = 0
+        if (name == tag_stsd):
+            padding = 8
+
+        if (name == tag_mp4a):
+            padding = 28
+
         new_atom = container_atom()
         new_atom.name = name
         new_atom.position = position
         new_atom.header_size = header_size
         new_atom.content_size = size - header_size
+        new_atom.padding = padding
         new_atom.contents = atom.load_multiple(
-            fh, position + header_size, position + size)
+            fh, position + header_size + padding, position + size)
 
         if (new_atom.contents is None):
             return None
@@ -270,7 +285,7 @@ class container_atom(atom):
 
     def resize(self):
         """Recomputes the atom size and recurses on contents."""
-        self.content_size = 0
+        self.content_size = self.padding
         for element in self.contents:
             if isinstance(element, container_atom):
                 element.resize()
@@ -358,6 +373,10 @@ class container_atom(atom):
             out_fh.write(struct.pack(">I", self.size()))
             out_fh.write(self.name)
 
+        if (self.padding > 0):
+            in_fh.seek(self.content_start())
+            tag_copy(in_fh, out_fh, self.padding)
+
         for element in self.contents:
             element.save(in_fh, out_fh, delta)
 
@@ -441,6 +460,7 @@ class mpeg4(container_atom):
     """Specialized behaviour for the root mpeg4 container"""
 
     def __init__(self):
+        container_atom.__init__(self, 0)
         self.contents = list()
         self.content_size = 0
         self.header_size = 0
@@ -541,6 +561,77 @@ class mpeg4(container_atom):
         for element in self.contents:
             element.save(in_fh, out_fh, delta)
 
+class spatial_audio_atom(atom):
+    def __init__(self):
+        atom.__init__(self)
+        self.name = "SA3D"
+        self.version = 0
+        self.ambisonic_type = 0  # user defined [0 = periphonic, 1 = horizontal]
+        self.ambisonic_order = 0  # user defined
+        self.ambisonic_channel_ordering = 0  # must be 0 (only ACN is supported)
+        self.normalization_type = 0  # must be 0 (only SN3D is supported)
+        self.num_channels = 0
+        self.channel_map = list()
+
+    @staticmethod
+    def create(num_channels, audio_metadata, atom, channel_map=None):
+        if (atom.name != "mp4a"):
+            return None
+
+        # TODO(damienkelly): Improve readability of below code.
+        new_atom = spatial_audio_atom()
+        new_atom.header_size = 8
+        new_atom.name = "SA3D"
+        new_atom.version = 0                     # uint8
+        new_atom.content_size += 1               # uint8
+        new_atom.ambisonic_type = ambisonic_types[
+            audio_metadata["ambisonic_type"]]
+        new_atom.content_size += 1               # uint8
+        new_atom.ambisonic_order = audio_metadata["ambisonic_order"]
+        new_atom.content_size += 4               # uint32
+        new_atom.ambisonic_channel_ordering = 0
+        new_atom.content_size += 1               # uint8
+        new_atom.normalization_type = 0
+        new_atom.content_size += 1               # uint8
+        new_atom.num_channels = num_channels
+        new_atom.content_size += 4               # uint32
+
+        for channel_element in channel_map:
+            new_atom.channel_map.append(channel_element)
+            new_atom.content_size += 4  # uint32
+        return new_atom
+
+    def print_atom(self):
+        ambix_type = (key for key,value in ambisonic_types.items()
+                      if value==self.ambisonic_type).next()
+        channel_ordering = (key for key,value in ambisonic_ordering.items()
+                            if value==self.ambisonic_channel_ordering).next()
+        normalization_type = (key for key,value in ambisonic_normalization.items()
+                              if value==self.normalization_type).next()
+        print "\t\tAmbisonic Type: ", ambix_type
+        print "\t\tAmbisonic Order: ", self.ambisonic_order
+        print "\t\tChannel Ordering: ", channel_ordering
+        print "\t\tNormalization Type: ", normalization_type
+        print "\t\tChannel Mapping: ", self.channel_map
+
+    def save(self, in_fh, out_fh, delta):
+        if (self.header_size == 16):
+            out_fh.write(struct.pack(">I", 1))
+            out_fh.write(struct.pack(">Q", self.size()))
+            out_fh.write(self.name)
+        elif(self.header_size == 8):
+            out_fh.write(struct.pack(">I", self.size()))
+            out_fh.write(self.name)
+
+        out_fh.write(struct.pack(">B", self.version))
+        out_fh.write(struct.pack(">B", self.ambisonic_type))
+        out_fh.write(struct.pack(">I", self.ambisonic_order))
+        out_fh.write(struct.pack(">B", self.ambisonic_channel_ordering))
+        out_fh.write(struct.pack(">B", self.normalization_type))
+        out_fh.write(struct.pack(">I", self.num_channels))
+        for i in self.channel_map:
+            if (i != None):
+                out_fh.write(struct.pack(">I", int(i)))
 
 def spherical_uuid(metadata):
     """Constructs a uuid containing spherical metadata.
@@ -593,6 +684,184 @@ def mpeg4_add_spherical(mpeg4_file, in_fh, metadata):
                     break
 
     mpeg4_file.resize()
+    return True
+
+# Derives the length of the MP4 elementary stream descriptor at the current
+# position in the input file.
+def get_descriptor_length(in_fh):
+    descriptor_length = 0
+    for i in range(4):
+        size_byte = struct.unpack(">c", in_fh.read(1))[0]
+        descriptor_length = (descriptor_length << 7 |
+                             ord(size_byte) & int("0x7f", 0))
+        if (ord(size_byte) != int("0x80", 0)):
+            break
+    return descriptor_length
+
+# Reads the number of audio channels from AAC's AudioSpecificConfig descriptor
+# within the esds child atom of the input mp4a atom.
+def get_num_audio_channels(mp4a_atom, in_fh):
+    p = in_fh.tell()
+    if mp4a_atom.name != "mp4a":
+        return -1
+
+    for element in mp4a_atom.contents:
+        if (element.name != "esds"):
+          continue
+        in_fh.seek(element.content_start() + 4)
+        descriptor_tag = struct.unpack(">c", in_fh.read(1))[0]
+
+        # Verify the read descriptor is an elementary stream descriptor
+        if (ord(descriptor_tag) != 3):  # Not an MP4 elementary stream.
+            print "Error: failed to read elementary stream descriptor."
+            return -1
+        get_descriptor_length(in_fh)
+        in_fh.seek(3, 1)  # Seek to the decoder configuration descriptor
+        config_descriptor_tag = struct.unpack(">c", in_fh.read(1))[0]
+
+        # Verify the read descriptor is a decoder config. descriptor.
+        if (ord(config_descriptor_tag) != 4):
+            print "Error: failed to read decoder config. descriptor."
+            return -1
+        get_descriptor_length(in_fh)
+        in_fh.seek(13, 1) # offset to the decoder specific config descriptor.
+        decoder_specific_descriptor_tag = struct.unpack(">c", in_fh.read(1))[0]
+
+        # Verify the read descriptor is a decoder specific info descriptor
+        if (ord(decoder_specific_descriptor_tag) != 5):
+            print "Error: failed to read MP4 audio decoder specific config."
+            return -1
+        audio_specific_descriptor_size = get_descriptor_length(in_fh)
+        assert(audio_specific_descriptor_size >= 2)
+        decoder_descriptor = struct.unpack(">h", in_fh.read(2))[0]
+        object_type = (int("F800", 16) & decoder_descriptor) >> 11
+        sampling_frequency_index = (int("0780", 16) & decoder_descriptor) >> 7
+        if (sampling_frequency_index == 0):
+            # TODO(damienkelly): Fix this. If the sample rate is 96kHz an
+            # additional 24 bit offset value here specifies the actual sample
+            # rate.
+            print "Error: Graeter than 48khz audio is currently not supported."
+            return -1
+        channel_configuration = (int("0078", 16) & decoder_descriptor) >> 3
+    in_fh.seek(p)
+    return channel_configuration
+
+# Returns the number of audio tracks in the input mpeg4_file.
+def get_num_audio_tracks(mpeg4_file, in_fh):
+    num_audio_tracks = 0
+    for element in mpeg4_file.moov_atom.contents:
+        if element.name == "trak":
+            for sub_element in element.contents:
+                if sub_element.name != "mdia":
+                    continue
+                for mdia_sub_element in sub_element.contents:
+                    if mdia_sub_element.name != "hdlr":
+                        continue
+                    position = mdia_sub_element.content_start() + 8
+                    in_fh.seek(position)
+                    if (in_fh.read(4) == "soun"):
+                        num_audio_tracks += 1
+    return num_audio_tracks
+
+
+def inject_spatial_audio_atom(
+    in_fh, audio_media_atom, audio_metadata, channel_map):
+    for mdia_sub_element in audio_media_atom.contents:
+        if mdia_sub_element.name != "minf":
+            continue
+        for elem in mdia_sub_element.contents:
+            if elem.name != "stbl":
+                continue
+            for elem2 in elem.contents:
+                if elem2.name != "stsd":
+                    continue
+                for e in elem2.contents:
+                    if e.name == "mp4a":
+                        in_fh.seek(e.position + e.header_size + 16)
+                        num_channels = get_num_audio_channels(e, in_fh)
+                        if (channel_map != None and num_channels > 1):
+                            print "Error: Audio track has %d channels. When a " \
+                                " channel_map is defined each audio track " \
+                                " should be single channel (mono)" % num_channels
+                            return False
+                        sa3d_atom = spatial_audio_atom.create(
+                            num_channels, audio_metadata, e, channel_map)
+                        e.contents.append(sa3d_atom)
+    return True
+
+
+def mpeg4_add_spatial_audio(
+    mpeg4_file, in_fh, audio_metadata, components_per_track):
+    track_index = 0
+    channel_map = audio_metadata['channel_map']
+    for element in mpeg4_file.moov_atom.contents:
+        if element.name == "trak":
+            for sub_element in element.contents:
+                if sub_element.name != "mdia":
+                    continue
+                for mdia_sub_element in sub_element.contents:
+                    if mdia_sub_element.name != "hdlr":
+                        continue
+                    position = mdia_sub_element.content_start() + 8
+                    in_fh.seek(position)
+                    if (in_fh.read(4) == "soun"):
+                        if (components_per_track == 1):
+                            inject_spatial_audio_atom(
+                                in_fh, sub_element, audio_metadata,
+                                [channel_map[track_index]])
+                        else:
+                            inject_spatial_audio_atom(
+                                in_fh, sub_element, audio_metadata,
+                                channel_map)
+                        track_index += 1
+    return True
+
+
+def mpeg4_add_audio_metadata(mpeg4_file, in_fh, audio_metadata):
+    num_audio_tracks = get_num_audio_tracks(mpeg4_file, in_fh)
+    if (num_audio_tracks == 0):
+        print "Error: input file has no audio tracks."
+        return False
+
+    num_ambisonic_components = get_expected_num_audio_components(
+        audio_metadata["ambisonic_type"],
+        audio_metadata["ambisonic_order"])
+
+    channel_map = audio_metadata['channel_map']
+    if (num_audio_tracks > 1):
+        # No user defined channel map implies that the N ambisonic components
+        # of the input are contained N audio tracks each with a single
+        # channel (mono).
+        print "Channel map is specified. Assuming a multi-track single-" + \
+            "channel ambisonics configuration."
+
+        # Check that the number of audio tracks matches the number of
+        # elements in the user defined channel map.
+        if (num_audio_tracks != len(channel_map)):
+            print "Error: Mismatch between number of audio tracks (%d) " \
+                "and channel map elements (%d)." \
+                % (num_audio_tracks, len(channel_map))
+            return False
+
+        # Check that the number of audio tracks matches the number of
+        # ambisonic components given the ambisonic type and order.
+        if (num_ambisonic_components != num_audio_tracks):
+            print ("Error: expected %d audio tracks for ambisonic type " + \
+                "'%s' of order %d, found %d") \
+                % (num_ambisonic_components, audio_metadata["ambisonic_type"], \
+                audio_metadata["ambisonic_order"], num_audio_tracks)
+            return False
+        mpeg4_add_spatial_audio(mpeg4_file, in_fh, audio_metadata, 1)
+    else:
+        # A user defined channel_map implies that the N ambisonic components of
+        # the input are contained in a single audio track with N-channels.
+        print "No channel map is specified. Assuming a single-track " + \
+            "multi-channel ambisonic configuration."
+        if (num_audio_tracks != 1):
+            print "Error: expected 1 audio track, found ", num_audio_tracks
+            return False
+        mpeg4_add_spatial_audio(
+            mpeg4_file, in_fh, audio_metadata, num_ambisonic_components)
     return True
 
 
@@ -718,6 +987,22 @@ def ParseSphericalMpeg4(mpeg4_file, fh):
                             contents = fh.read(sub_element.content_size - 16)
                         ParseSphericalXML(contents)
 
+                if sub_element.name == "mdia":
+                    for mdia_sub_element in sub_element.contents:
+                        if mdia_sub_element.name != "minf":
+                            continue
+                        for elem in mdia_sub_element.contents:
+                            if elem.name != "stbl":
+                                continue
+                            for elem2 in elem.contents:
+                                if elem2.name != "stsd":
+                                    continue
+                                for elem3 in elem2.contents:
+                                    if elem3.name != "mp4a":
+                                        continue
+                                    for elem4 in elem3.contents:
+                                        if elem4.name == "SA3D":
+                                            elem4.print_atom()
 
 def PrintMpeg4(input_file):
     in_fh = open(input_file, "rb")
@@ -735,7 +1020,7 @@ def PrintMpeg4(input_file):
     return
 
 
-def InjectMpeg4(input_file, output_file, metadata):
+def InjectMpeg4(input_file, output_file, metadata, audio_metadata=None):
     in_fh = open(input_file, "rb")
     if in_fh is None:
         print ("File: \"", input_file, "\" does not exist or do not have "
@@ -750,7 +1035,10 @@ def InjectMpeg4(input_file, output_file, metadata):
         print "Failed to insert spherical data"
         return
 
-    print "Saved file settings"
+    if not mpeg4_add_audio_metadata(mpeg4_file, in_fh, audio_metadata):
+        print "Failed to insert spatial audio metadata"
+        return
+
     ParseSphericalMpeg4(mpeg4_file, in_fh)
 
     out_fh = open(output_file, "wb")
@@ -758,6 +1046,11 @@ def InjectMpeg4(input_file, output_file, metadata):
     out_fh.close()
     in_fh.close()
 
+def get_expected_num_audio_components(ambisonics_type, ambisonics_order):
+    return {
+        'periphonic': (ambisonics_order + 1) * (ambisonics_order + 1),
+        'horizontal': (2 * ambisonics_order) + 1,
+    }.get(ambisonics_type, 0)
 
 def PrintMKV(input_file):
     if not ffmpeg():
@@ -808,7 +1101,7 @@ def PrintMetadata(src):
     return
 
 
-def InjectMetadata(src, dest, metadata):
+def InjectMetadata(src, dest, metadata, audio_metadata):
     infile = os.path.abspath(src)
     outfile = os.path.abspath(dest)
 
@@ -826,11 +1119,15 @@ def InjectMetadata(src, dest, metadata):
     print "Processing: ", infile, "\n"
 
     if (os.path.splitext(infile)[1].lower() in [ ".webm", ".mkv"]):
+        if (audio_metadata != None):
+            print "Error: Spatial audio is not supported for or webm " \
+                  "mkv (mp4 only)"
+            return
         InjectMKV(infile, outfile, metadata)
         return
 
     if (os.path.splitext(infile)[1].lower() == ".mp4"):
-        InjectMpeg4(infile, outfile, metadata)
+        InjectMpeg4(infile, outfile, metadata, audio_metadata)
         return
 
     print "Unknown file type"
@@ -855,6 +1152,26 @@ def main():
                       default='none',
                       help='stereo frame order (top-bottom|left-right)',)
 
+    parser.add_option('--ac', '--channel_map',
+                      type='string',
+                      action='store',
+                      dest='channel_map',
+                      default=None)
+
+    parser.add_option('--ambix', '--ambisonic_order',
+                      type='int',
+                      action='store',
+                      dest='ambisonic_order',
+                      default=0)
+
+    parser.add_option('--ambix_type', '--ambisonic_type',
+                      type='choice',
+                      action='store',
+                      dest='ambisonic_type',
+                      choices=['none', 'periphonic', 'horizontal'],
+                      default='none',
+                      help='ambisonic type')
+
     (opts, args) = parser.parse_args()
 
     # Configure inject xml.
@@ -870,11 +1187,23 @@ def main():
                      additional_xml +
                      spherical_xml_footer)
 
+    # Configure input ambisonics audio metadata.
+    audio_metadata = None
+
+    channel_map = []
+    if (opts.channel_map != None):
+        channel_map = map(int, opts.channel_map.rsplit(':'))
+
+    if (opts.ambisonic_type != 'none'):
+      audio_metadata = {'channel_map': channel_map,
+                        'ambisonic_order': opts.ambisonic_order,
+                        'ambisonic_type': opts.ambisonic_type}
+
     if opts.inject:
         if len(args) != 2:
             print "Injecting metadata requires both a source and destination."
             return
-        InjectMetadata(args[0], args[1], spherical_xml)
+        InjectMetadata(args[0], args[1], spherical_xml, audio_metadata)
         return
 
     if len(args) > 0:
