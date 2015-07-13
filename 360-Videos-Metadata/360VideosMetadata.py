@@ -104,10 +104,6 @@ spherical_tags = dict()
 for tag in spherical_tags_list:
     spherical_tags[spherical_prefix + tag] = tag
 
-ambisonic_types = {'periphonic': 0, 'horizontal': 1}
-ambisonic_ordering = {'ACN': 0}
-ambisonic_normalization = {'SN3D': 0}
-
 class atom:
     """MPEG4 atom contents and behaviour true for all atoms."""
 
@@ -562,12 +558,16 @@ class mpeg4(container_atom):
             element.save(in_fh, out_fh, delta)
 
 class spatial_audio_atom(atom):
+    ambisonic_types = {'periphonic': 0, 'horizontal': 1}
+    ambisonic_ordering = {'ACN': 0}
+    ambisonic_normalization = {'SN3D': 0}
+
     def __init__(self):
         atom.__init__(self)
         self.name = "SA3D"
         self.version = 0
-        self.ambisonic_type = 0  # user defined [0 = periphonic, 1 = horizontal]
-        self.ambisonic_order = 0  # user defined
+        self.ambisonic_type = 0  # [0 = periphonic, 1 = horizontal]
+        self.ambisonic_order = 0
         self.ambisonic_channel_ordering = 0  # must be 0 (only ACN is supported)
         self.normalization_type = 0  # must be 0 (only SN3D is supported)
         self.num_channels = 0
@@ -584,7 +584,7 @@ class spatial_audio_atom(atom):
         new_atom.name = "SA3D"
         new_atom.version = 0                     # uint8
         new_atom.content_size += 1               # uint8
-        new_atom.ambisonic_type = ambisonic_types[
+        new_atom.ambisonic_type = spatial_audio_atom.ambisonic_types[
             audio_metadata["ambisonic_type"]]
         new_atom.content_size += 1               # uint8
         new_atom.ambisonic_order = audio_metadata["ambisonic_order"]
@@ -596,17 +596,17 @@ class spatial_audio_atom(atom):
         new_atom.num_channels = num_channels
         new_atom.content_size += 4               # uint32
 
-        for channel_element in channel_map:
+        for channel_element in range(0, num_channels):
             new_atom.channel_map.append(channel_element)
             new_atom.content_size += 4  # uint32
         return new_atom
 
     def print_atom(self):
-        ambix_type = (key for key,value in ambisonic_types.items()
+        ambix_type = (key for key,value in spatial_audio_atom.ambisonic_types.items()
                       if value==self.ambisonic_type).next()
-        channel_ordering = (key for key,value in ambisonic_ordering.items()
+        channel_ordering = (key for key,value in spatial_audio_atom.ambisonic_ordering.items()
                             if value==self.ambisonic_channel_ordering).next()
-        normalization_type = (key for key,value in ambisonic_normalization.items()
+        normalization_type = (key for key,value in spatial_audio_atom.ambisonic_normalization.items()
                               if value==self.normalization_type).next()
         print "\t\tAmbisonic Type: ", ambix_type
         print "\t\tAmbisonic Order: ", self.ambisonic_order
@@ -764,8 +764,7 @@ def get_num_audio_tracks(mpeg4_file, in_fh):
     return num_audio_tracks
 
 
-def inject_spatial_audio_atom(
-    in_fh, audio_media_atom, audio_metadata, channel_map):
+def inject_spatial_audio_atom(in_fh, audio_media_atom, audio_metadata):
     for mdia_sub_element in audio_media_atom.contents:
         if mdia_sub_element.name != "minf":
             continue
@@ -779,21 +778,26 @@ def inject_spatial_audio_atom(
                     if e.name == "mp4a":
                         in_fh.seek(e.position + e.header_size + 16)
                         num_channels = get_num_audio_channels(e, in_fh)
-#                        if (channel_map != None and num_channels > 1):
-#                            print "Error: Audio track has %d channels. When a " \
-#                                " channel_map is defined each audio track " \
-#                                " should be single channel (mono)" % num_channels
-#                            return False
+                        num_ambisonic_components = \
+                            get_expected_num_audio_components(
+                                audio_metadata["ambisonic_type"],
+                                audio_metadata["ambisonic_order"])
+                        if num_channels != num_ambisonic_components:
+                            print "Error: Expected %d audio channels for %s "\
+                                "ambisonics of order %s. Found only %d " \
+                                "channels." \
+                                % (num_ambisonic_components,
+                                   audio_metadata["ambisonic_type"],
+                                   audio_metadata["ambisonic_order"],
+                                   num_channels)
+                            return False
                         sa3d_atom = spatial_audio_atom.create(
-                            num_channels, audio_metadata, e, channel_map)
+                            num_channels, audio_metadata, e)
                         e.contents.append(sa3d_atom)
     return True
 
 
-def mpeg4_add_spatial_audio(
-    mpeg4_file, in_fh, audio_metadata, components_per_track):
-    track_index = 0
-    channel_map = audio_metadata['channel_map']
+def mpeg4_add_spatial_audio(mpeg4_file, in_fh, audio_metadata):
     for element in mpeg4_file.moov_atom.contents:
         if element.name == "trak":
             for sub_element in element.contents:
@@ -805,63 +809,18 @@ def mpeg4_add_spatial_audio(
                     position = mdia_sub_element.content_start() + 8
                     in_fh.seek(position)
                     if (in_fh.read(4) == "soun"):
-                        if (components_per_track == 1):
-                            inject_spatial_audio_atom(
-                                in_fh, sub_element, audio_metadata,
-                                [channel_map[track_index]])
-                        else:
-                            inject_spatial_audio_atom(
-                                in_fh, sub_element, audio_metadata,
-                                channel_map)
-                        track_index += 1
+                        inject_spatial_audio_atom(
+                            in_fh, sub_element, audio_metadata)
     return True
 
 
 def mpeg4_add_audio_metadata(mpeg4_file, in_fh, audio_metadata):
     num_audio_tracks = get_num_audio_tracks(mpeg4_file, in_fh)
-    if (num_audio_tracks == 0):
-        print "Error: input file has no audio tracks."
+    if (num_audio_tracks > 1):
+        print "Error: Input one audio track. Found ", num_audio_tracks
         return False
 
-    num_ambisonic_components = get_expected_num_audio_components(
-        audio_metadata["ambisonic_type"],
-        audio_metadata["ambisonic_order"])
-
-    channel_map = audio_metadata['channel_map']
-    if (num_audio_tracks > 1):
-        # No user defined channel map implies that the N ambisonic components
-        # of the input are contained N audio tracks each with a single
-        # channel (mono).
-        print "Channel map is specified. Assuming a multi-track single-" + \
-            "channel ambisonics configuration."
-
-        # Check that the number of audio tracks matches the number of
-        # elements in the user defined channel map.
-        if (num_audio_tracks != len(channel_map)):
-            print "Error: Mismatch between number of audio tracks (%d) " \
-                "and channel map elements (%d)." \
-                % (num_audio_tracks, len(channel_map))
-            return False
-
-        # Check that the number of audio tracks matches the number of
-        # ambisonic components given the ambisonic type and order.
-        if (num_ambisonic_components != num_audio_tracks):
-            print ("Error: expected %d audio tracks for ambisonic type " + \
-                "'%s' of order %d, found %d") \
-                % (num_ambisonic_components, audio_metadata["ambisonic_type"], \
-                audio_metadata["ambisonic_order"], num_audio_tracks)
-            return False
-        mpeg4_add_spatial_audio(mpeg4_file, in_fh, audio_metadata, 1)
-    else:
-        # A user defined channel_map implies that the N ambisonic components of
-        # the input are contained in a single audio track with N-channels.
-        print "No channel map is specified. Assuming a single-track " + \
-            "multi-channel ambisonic configuration."
-        if (num_audio_tracks != 1):
-            print "Error: expected 1 audio track, found ", num_audio_tracks
-            return False
-        mpeg4_add_spatial_audio(
-            mpeg4_file, in_fh, audio_metadata, num_ambisonic_components)
+    mpeg4_add_spatial_audio(mpeg4_file, in_fh, audio_metadata)
     return True
 
 
@@ -1190,13 +1149,8 @@ def main():
     # Configure input ambisonics audio metadata.
     audio_metadata = None
 
-    channel_map = []
-    if (opts.channel_map != None):
-        channel_map = map(int, opts.channel_map.rsplit(':'))
-
     if (opts.ambisonic_type != 'none'):
-      audio_metadata = {'channel_map': channel_map,
-                        'ambisonic_order': opts.ambisonic_order,
+      audio_metadata = {'ambisonic_order': opts.ambisonic_order,
                         'ambisonic_type': opts.ambisonic_type}
 
     if opts.inject:
