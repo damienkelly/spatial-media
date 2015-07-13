@@ -779,11 +779,11 @@ def inject_spatial_audio_atom(
                     if e.name == "mp4a":
                         in_fh.seek(e.position + e.header_size + 16)
                         num_channels = get_num_audio_channels(e, in_fh)
-                        if (channel_map != None and num_channels > 1):
-                            print "Error: Audio track has %d channels. When a " \
-                                " channel_map is defined each audio track " \
-                                " should be single channel (mono)" % num_channels
-                            return False
+#                        if (channel_map != None and num_channels > 1):
+#                            print "Error: Audio track has %d channels. When a " \
+#                                " channel_map is defined each audio track " \
+#                                " should be single channel (mono)" % num_channels
+#                            return False
                         sa3d_atom = spatial_audio_atom.create(
                             num_channels, audio_metadata, e, channel_map)
                         e.contents.append(sa3d_atom)
