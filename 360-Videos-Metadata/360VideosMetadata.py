@@ -765,35 +765,37 @@ def get_num_audio_tracks(mpeg4_file, in_fh):
 
 
 def inject_spatial_audio_atom(in_fh, audio_media_atom, audio_metadata):
-    for mdia_sub_element in audio_media_atom.contents:
-        if mdia_sub_element.name != "minf":
+    for atom in audio_media_atom.contents:
+        if atom.name != "minf":
             continue
-        for elem in mdia_sub_element.contents:
-            if elem.name != "stbl":
+        for element in atom.contents:
+            if element.name != "stbl":
                 continue
-            for elem2 in elem.contents:
-                if elem2.name != "stsd":
+            for sub_element in element.contents:
+                if sub_element.name != "stsd":
                     continue
-                for e in elem2.contents:
-                    if e.name == "mp4a":
-                        in_fh.seek(e.position + e.header_size + 16)
-                        num_channels = get_num_audio_channels(e, in_fh)
+                for sample_description in sub_element.contents:
+                    if sample_description.name == "mp4a":
+                        in_fh.seek(sample_description.position +
+                                   sample_description.header_size + 16)
+                        num_channels = get_num_audio_channels(
+                            sample_description, in_fh)
                         num_ambisonic_components = \
                             get_expected_num_audio_components(
                                 audio_metadata["ambisonic_type"],
                                 audio_metadata["ambisonic_order"])
                         if num_channels != num_ambisonic_components:
-                            print "Error: Expected %d audio channels for %s "\
-                                "ambisonics of order %s. Found only %d " \
-                                "channels." \
-                                % (num_ambisonic_components,
+                            print "Error: Found %d audio channel(s). Expected "\
+                                  "%d channel(s) for %s ambisonics of order "\
+                                  "%d."\
+                                % (num_channels,
+                                   num_ambisonic_components,
                                    audio_metadata["ambisonic_type"],
-                                   audio_metadata["ambisonic_order"],
-                                   num_channels)
+                                   audio_metadata["ambisonic_order"])
                             return False
                         sa3d_atom = spatial_audio_atom.create(
-                            num_channels, audio_metadata, e)
-                        e.contents.append(sa3d_atom)
+                            num_channels, audio_metadata, sample_description)
+                        sample_description.contents.append(sa3d_atom)
     return True
 
 
@@ -1121,7 +1123,7 @@ def main():
                       type='int',
                       action='store',
                       dest='ambisonic_order',
-                      default=0)
+                      default=1)
 
     parser.add_option('--ambix_type', '--ambisonic_type',
                       type='choice',
