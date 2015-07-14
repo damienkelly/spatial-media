@@ -1155,6 +1155,26 @@ def main():
                       default='none',
                       help='ambisonic type')
 
+    parser.add_option('--ac', '--channel_map',
+                      type='string',
+                      action='store',
+                      dest='channel_map',
+                      default=None)
+
+    parser.add_option('--ambix', '--ambisonic_order',
+                      type='int',
+                      action='store',
+                      dest='ambisonic_order',
+                      default=1)
+
+    parser.add_option('--ambix_type', '--ambisonic_type',
+                      type='choice',
+                      action='store',
+                      dest='ambisonic_type',
+                      choices=['none', 'periphonic', 'horizontal'],
+                      default='none',
+                      help='ambisonic type')
+
     (opts, args) = parser.parse_args()
 
     # Configure inject xml.
