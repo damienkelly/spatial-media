@@ -50,6 +50,9 @@ tag_uuid = "uuid"
 tag_stsd = "stsd"
 tag_mp4a = "mp4a"
 
+# Ambisonics MP4 atom
+tag_sa3d = "SA3D"
+
 containers = [tag_moov, tag_udta, tag_trak,
               tag_mdia, tag_minf, tag_stbl,
               tag_stsd, tag_mp4a]
@@ -139,6 +142,7 @@ class atom:
         Returns:
           atom: atom, atom from loaded file location or None.
         """
+        print "loading: ", position
         if (position is None):
             position = fh.tell()
 
@@ -146,9 +150,16 @@ class atom:
         header_size = 8
         size = struct.unpack(">I", fh.read(4))[0]
         name = fh.read(4)
+        print name, size
 
         if (name in containers):
             return container_atom.load(fh, position, end)
+
+        if (name == tag_sa3d):
+            a = spatial_audio_atom.load(fh, position, end)
+            a.print_atom()
+            print "position: ", a.position
+            return a
 
         if (size == 1):
             size = struct.unpack(">Q", fh.read(8))[0]
@@ -180,6 +191,7 @@ class atom:
                 print ("Error, failed to load atom.")
                 return None
             loaded.append(new_atom)
+            print "temp: ", new_atom.position, new_atom.size()
             position = new_atom.position + new_atom.size()
 
         return loaded
@@ -574,24 +586,21 @@ class spatial_audio_atom(atom):
 
     def __init__(self):
         atom.__init__(self)
-        self.name = "SA3D"
+        self.name = tag_sa3d
+        self.header_size = 8
         self.version = 0
-        self.ambisonic_type = 0  # [0 = periphonic, 1 = horizontal]
+        self.ambisonic_type = 0
         self.ambisonic_order = 0
-        self.ambisonic_channel_ordering = 0  # must be 0 (only ACN is supported)
-        self.normalization_type = 0  # must be 0 (only SN3D is supported)
+        self.ambisonic_channel_ordering = 0
+        self.normalization_type = 0
         self.num_channels = 0
         self.channel_map = list()
 
     @staticmethod
-    def create(num_channels, audio_metadata, atom, channel_map=None):
-        if (atom.name != "mp4a"):
-            return None
-
-        # TODO(damienkelly): Improve readability of below code.
+    def create(num_channels, audio_metadata):
         new_atom = spatial_audio_atom()
         new_atom.header_size = 8
-        new_atom.name = "SA3D"
+        new_atom.name = tag_sa3d
         new_atom.version = 0                     # uint8
         new_atom.content_size += 1               # uint8
         new_atom.ambisonic_type = spatial_audio_atom.ambisonic_types[
@@ -611,17 +620,55 @@ class spatial_audio_atom(atom):
             new_atom.content_size += 4  # uint32
         return new_atom
 
+    @staticmethod
+    def load(fh, position=None, end=None):
+        fh.seek(position)
+
+        new_atom = spatial_audio_atom()
+        new_atom.position = position
+        size = struct.unpack(">I", fh.read(4))[0]
+        name = fh.read(4)
+
+        if (name != tag_sa3d):
+            print ("Error: atom is not an SA3D atom.")
+            return None
+
+        if (position + size > end):
+            print ("Error: SA3D atom size exceeds bounds.")
+            return None
+
+        new_atom.content_size = size - new_atom.header_size
+        new_atom.version = struct.unpack(">B", fh.read(1))[0]
+        new_atom.ambisonic_type = struct.unpack(">B", fh.read(1))[0]
+        new_atom.ambisonic_order = struct.unpack(">I", fh.read(4))[0]
+        new_atom.ambisonic_channel_ordering = struct.unpack(">B", fh.read(1))[0]
+        new_atom.normalization_type = struct.unpack(">B", fh.read(1))[0]
+        new_atom.num_channels = struct.unpack(">I", fh.read(4))[0]
+        for i in range(0, new_atom.num_channels):
+            new_atom.channel_map.append(
+                struct.unpack(">I", fh.read(4))[0])
+        return new_atom
+
+    """ Prints the contents of this spatial audio (Sa3D) atom """
     def print_atom(self):
-        ambix_type = (key for key,value in spatial_audio_atom.ambisonic_types.items()
-                      if value==self.ambisonic_type).next()
-        channel_ordering = (key for key,value in spatial_audio_atom.ambisonic_ordering.items()
-                            if value==self.ambisonic_channel_ordering).next()
-        normalization_type = (key for key,value in spatial_audio_atom.ambisonic_normalization.items()
-                              if value==self.normalization_type).next()
-        print "\t\tAmbisonic Type: ", ambix_type
+        ambisonic_types = spatial_audio_atom.ambisonic_types.items()
+        ambisonic_type = (key for key,value in ambisonic_types
+                          if value==self.ambisonic_type).next()
+        ambisonic_channel_ordering = \
+            spatial_audio_atom.ambisonic_ordering.items()
+        channel_ordering = (
+            key for key,value in ambisonic_channel_ordering
+            if value==self.ambisonic_channel_ordering).next()
+        ambisonic_normalization = \
+            spatial_audio_atom.ambisonic_normalization.items()
+        normalization_type = (
+            key for key,value in ambisonic_normalization
+            if value==self.normalization_type).next()
+        print "\t\tAmbisonic Type: ", ambisonic_type
         print "\t\tAmbisonic Order: ", self.ambisonic_order
         print "\t\tChannel Ordering: ", channel_ordering
         print "\t\tNormalization Type: ", normalization_type
+        print "\t\tNumber of Channel: ", self.num_channels
         print "\t\tChannel Mapping: ", self.channel_map
 
     def save(self, in_fh, out_fh, delta):
@@ -642,6 +689,7 @@ class spatial_audio_atom(atom):
         for i in self.channel_map:
             if (i != None):
                 out_fh.write(struct.pack(">I", int(i)))
+
 
 def spherical_uuid(metadata):
     """Constructs a uuid containing spherical metadata.
@@ -712,7 +760,7 @@ def get_descriptor_length(in_fh):
 # within the esds child atom of the input mp4a atom.
 def get_num_audio_channels(mp4a_atom, in_fh):
     p = in_fh.tell()
-    if mp4a_atom.name != "mp4a":
+    if mp4a_atom.name != tag_mp4a:
         return -1
 
     for element in mp4a_atom.contents:
@@ -785,7 +833,7 @@ def inject_spatial_audio_atom(in_fh, audio_media_atom, audio_metadata):
                 if sub_element.name != "stsd":
                     continue
                 for sample_description in sub_element.contents:
-                    if sample_description.name == "mp4a":
+                    if sample_description.name == tag_mp4a:
                         in_fh.seek(sample_description.position +
                                    sample_description.header_size + 16)
                         num_channels = get_num_audio_channels(
@@ -804,7 +852,7 @@ def inject_spatial_audio_atom(in_fh, audio_media_atom, audio_metadata):
                                    audio_metadata["ambisonic_order"])
                             return False
                         sa3d_atom = spatial_audio_atom.create(
-                            num_channels, audio_metadata, sample_description)
+                            num_channels, audio_metadata)
                         sample_description.contents.append(sa3d_atom)
     return True
 
@@ -969,10 +1017,10 @@ def ParseSphericalMpeg4(mpeg4_file, fh):
                                 if elem2.name != "stsd":
                                     continue
                                 for elem3 in elem2.contents:
-                                    if elem3.name != "mp4a":
+                                    if elem3.name != tag_mp4a:
                                         continue
                                     for elem4 in elem3.contents:
-                                        if elem4.name == "SA3D":
+                                        if elem4.name == tag_sa3d:
                                             elem4.print_atom()
 
 def PrintMpeg4(input_file):
