@@ -142,7 +142,6 @@ class atom:
         Returns:
           atom: atom, atom from loaded file location or None.
         """
-        print "loading: ", position
         if (position is None):
             position = fh.tell()
 
@@ -150,7 +149,6 @@ class atom:
         header_size = 8
         size = struct.unpack(">I", fh.read(4))[0]
         name = fh.read(4)
-        print name, size
 
         if (name in containers):
             return container_atom.load(fh, position, end)
@@ -191,7 +189,6 @@ class atom:
                 print ("Error, failed to load atom.")
                 return None
             loaded.append(new_atom)
-            print "temp: ", new_atom.position, new_atom.size()
             position = new_atom.position + new_atom.size()
 
         return loaded
@@ -1183,7 +1180,7 @@ def main():
                             "x=CroppedAreaLeftPixels "
                             "y=CroppedAreaTopPixels"),)
 
-    parser.add_option('--ambix', '--ambisonic_order',
+    parser.add_option('--ambix_order', '--ambisonic_order',
                       type='int',
                       action='store',
                       dest='ambisonic_order',
