@@ -1180,19 +1180,22 @@ def main():
                             "x=CroppedAreaLeftPixels "
                             "y=CroppedAreaTopPixels"),)
 
-    parser.add_option('--ambix_order', '--ambisonic_order',
-                      type='int',
-                      action='store',
-                      dest='ambisonic_order',
+    parser.add_option("--ambix_order", "--ambisonic_order",
+                      type="int",
+                      help="The ambisonic order of the input's audio stream. "
+                           "Only integer order values are supported.",
+                      action="store",
+                      dest="ambisonic_order",
                       default=1)
 
-    parser.add_option('--ambix_type', '--ambisonic_type',
-                      type='choice',
-                      action='store',
-                      dest='ambisonic_type',
-                      choices=['none', 'periphonic', 'horizontal'],
-                      default='none',
-                      help='ambisonic type')
+    parser.add_option("--ambix_type", "--ambisonic_type",
+                      type="choice",
+                      help="The ambisonic type of the input's audio stream. "
+                           "Can be either \"horizontal\" or \"periphonic\".",
+                      action="store",
+                      dest="ambisonic_type",
+                      choices=["none", "periphonic", "horizontal"],
+                      default="none")
 
     (opts, args) = parser.parse_args()
 
